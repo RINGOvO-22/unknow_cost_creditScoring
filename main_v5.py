@@ -18,7 +18,7 @@ import torch
 # hyperparameters
 max_training_time_steps = 100000
 max_testing_time_steps = 100000
-n_episodes = 100   # 30
+n_episodes = 30 # 30 or 100
 train_rolling_length = max_training_time_steps//200*n_episodes # for plotting moving averages
 test_rolling_length = max_testing_time_steps//200*n_episodes
 learning_rate = 1e-2

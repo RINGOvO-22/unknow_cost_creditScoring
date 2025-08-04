@@ -17,7 +17,7 @@ Similarly, use the data processed by methods from "Performative Prediction"
 test_label_threshold = 0.5  # threshold for the test label
 seed = 0 # 0 or 2
 # cost parameter: v_i = 0.5 -> epsilon = 1 (different form in different papers)
-epsilon: float = 0.5 # 0-10
+epsilon: float = 0.5 # larger: easier to manipulate, smaller: harder to manipulate
 strat_features = np.array([0, 1])
 strategic_response = True
 response_method = "Close"  # "GA" or "Close"
