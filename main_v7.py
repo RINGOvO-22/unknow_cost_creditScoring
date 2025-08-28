@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from matplotlib import pyplot as plt
-from env.creditScoring_v5_box import creditScoring_v5
+from env.creditScoring_v7 import creditScoring_v7
 from model.principal_v5 import Principal_v5
 import csv
 from sklearn.metrics import roc_auc_score
@@ -18,18 +18,20 @@ import torch
 # hyperparameters
 max_training_time_steps = 100000
 max_testing_time_steps = 100000
-n_episodes = 100 # 30 or 100
+n_episodes = 1000 # 300 or 1000
 train_rolling_length = max_training_time_steps//200*n_episodes # for plotting moving averages
 test_rolling_length = max_testing_time_steps//200*n_episodes
 learning_rate = 1e-2
 seed = 0 # 0 or 2
 
+
 # mode = "normalized data + non-strategic response"
 
 def main():
-    env = gym.make("creditScoring_v5")
+    env = gym.make("creditScoring_v7")
     agent = Principal_v5(
         env=env,
+        dimension=10,
         learning_rate_actor=learning_rate,
         learning_rate_critic=learning_rate,
         learning_rate_cost=learning_rate,
@@ -64,12 +66,12 @@ def main():
         path,
         learned_policy_weight[np.newaxis, :],  # 把 shape=(11,)→(1,11)
         delimiter=",",
-        header="w1,w2,w3",
+        header="w1,w2,w3,w4,w5,w6,w7,w8,w9,w10,bias",
         comments=""
     )
 
     # test
-    env_test = gym.make("creditScoring_v5")
+    env_test = gym.make("creditScoring_v7")
     env_test.mode = 'test'
     obs, info = env_test.reset()
     env_test.policy_weight = agent.previous_policy_weight
@@ -410,11 +412,11 @@ def visualize_2d_response(agent,
 
     # 3. 用最终 policy_weight 生成 response 样本
     w = agent.previous_policy_weight
-    env = creditScoring_v5()
+    env = creditScoring_v7()
     env.policy_weight = w
-    # 对每个样本调用 strategic_response_Close / GA
+    # 对每个样本调用 strategic_response_Close
     X_strat = np.vstack([
-        env.strategic_response_GA(x, env.policy_weight)
+        env.strategic_response_Close(x, env.policy_weight)
         for x in X
     ])
 
@@ -451,11 +453,11 @@ if __name__ == "__main__":
     plot_test_auc(agent)
     plot_results_accAndRewards_export(agent, env, train_rolling_length, test_rolling_length)
 
-    visualize_2d_response(
-        agent,
-        data_path = "./data/generated_2D_data.csv",
-        seed      = 0,
-        result_dir= "./result/last_experiment",
-        use_train = True
-    )
+    # visualize_2d_response(
+    #     agent,
+    #     data_path = "./data/generated_2D_data.csv",
+    #     seed      = 0,
+    #     result_dir= "./result/last_experiment",
+    #     use_train = True
+    # )
 

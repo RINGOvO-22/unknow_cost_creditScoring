@@ -7,7 +7,7 @@ from sklearn import preprocessing
 from collections import Counter
 
 
-def load_data(file_loc, seed=None):
+def load_data(file_loc, seed=None, test_size=0.2):
     """Load data from cvs file.
 
     Parameters
@@ -53,7 +53,12 @@ def load_data(file_loc, seed=None):
     p = np.random.permutation(len(indices))
     X_full = X_balanced[p]
     Y_full = Y_balanced[p]
-    return X_full, Y_full, data
+
+    # split into training and test sets
+    m = len(X_all)
+    split = int((1-test_size)* m)
+
+    return X_full[:split], Y_full[:split], X_full[split:], Y_full[split:]
 
 if __name__ == "__main__":
     X, Y, data = load_data("data/GiveMeSomeCredit/cs-training.csv")

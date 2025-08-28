@@ -9,7 +9,7 @@ from utils.data_prep_for2D import load_data
 from scipy.special import expit
 
 """
-Version 5: with 2D dataset
+Version 5: with 2D dataset (but box-constrained features)
 Similarly, use the data processed by methods from "Performative Prediction"
 """
 
@@ -20,9 +20,22 @@ seed = 0 # 0 or 2
 epsilon: float = 0.5 # larger: easier to manipulate, smaller: harder to manipulatex
 strat_features = np.array([1, 6, 8]) - 1
 strategic_response = True
-response_method = "Close"  # "GA" or "Close"
+response_method = "GA"  # "GA" or "Close"
 dimension = 2 # number of features
 
+def repair_x1(x: np.ndarray, lower=-0.1, upper=0.1):
+    """
+    Repair x1 (first feature) so that it does NOT lie in (lower, upper)
+    If x1 in [lower, upper], push to lower or upper, whichever is closer.
+    """
+    x1 = x[:, 0]
+    mask = (x1 > lower) & (x1 < upper)
+    # Push to nearest boundary
+    x1_rep = x1.copy()
+    x1_rep[mask] = np.where(x1[mask] < 0, lower, upper)
+    x[:, 0] = x1_rep
+    return x
+    
 class creditScoring_v5(gym.Env):
 
     def __init__(self,
@@ -50,6 +63,9 @@ class creditScoring_v5(gym.Env):
         # Load the training and test data
         filePath = "./data/generated_2D_data.csv"
         self.train_x, self.train_y, self.test_x, self.test_y = load_data(filePath, seed=seed)
+        # === 修复 x1: 不允许在 (-0.1, 0.1) 内 ===
+        self.train_x = repair_x1(self.train_x, lower=-0.1, upper=0.1)
+        self.test_x  = repair_x1(self.test_x,  lower=-0.1, upper=0.1)
 
         # parameter of the real cost function
         # Assume using a weighted quadratic cost function (same as in the "made practical" paper)
@@ -61,7 +77,8 @@ class creditScoring_v5(gym.Env):
         # test
         self.trigger_once = False
     
-    def strategic_response_GA(self,
+
+    def strategic_response_GA_naive(self,
                           real_feature: np.ndarray,
                           policy_weight: np.ndarray,
                           learning_rate: float = 0.01,
@@ -131,6 +148,8 @@ class creditScoring_v5(gym.Env):
             loss.backward()
             optimizer.step()
 
+        
+
             # 投影到 [-5,5]
             with torch.no_grad():
                 z_s.clamp_(-5.0, 5.0)
@@ -158,6 +177,117 @@ class creditScoring_v5(gym.Env):
         modified = real_feature.copy()
         modified[strat_features] = z_s.detach().cpu().numpy()
 
+        modified = np.clip(modified, -5.0, 5.0)
+        return modified
+
+    # for partial non feasible features
+    def strategic_response_GA(self,
+                          real_feature: np.ndarray,
+                          policy_weight: np.ndarray,
+                          learning_rate: float = 0.01,
+                          num_steps: int = 20,
+                          epsilon: float = epsilon,
+                          strat_features: Optional[list] = None):
+        """
+        Strategic response using gradient ascent with non-convex constraint:
+        x1 cannot lie in [-0.1, 0.1]. Uses repair-based projection.
+
+        由于 PyTorch 不支持非凸集投影，我们采用 启发式修复策略（heuristic repair）：
+            1. 每次梯度更新后，检查 z_s 中是否涉及 x1（即 strat_features 包含索引 0）
+            2. 如果 z[0] ∈ (-0.1, 0.1)，则将其“推”到最近的边界：-0.1 或 +0.1
+        """
+        if not hasattr(self, "_response_call_count"):
+            self._response_call_count = 0
+        self._response_call_count += 1
+
+        if not strategic_response:
+            return real_feature
+
+        n_features = len(policy_weight) - 1
+        if strat_features is None:
+            strat_features = list(range(n_features))
+        ns_features = [i for i in range(n_features) if i not in strat_features]
+
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        x_orig = torch.tensor(real_feature.astype(np.float32), device=device)
+        theta_full = torch.tensor(policy_weight.astype(np.float32), device=device)
+        theta = theta_full[:-1]
+        bias = theta_full[-1]
+
+        x_s = x_orig[strat_features]
+        x_ns = x_orig[ns_features][:-1]  # remove bias
+        theta_s = theta[strat_features]
+        theta_ns = theta[ns_features]
+
+        cost_s = torch.tensor(self.cost_weight[strat_features].astype(np.float32), device=device)
+
+        with torch.no_grad():
+            const_term = torch.dot(theta_ns, x_ns) + bias
+
+        z_s = x_s.clone().detach().requires_grad_(True)
+        optimizer = torch.optim.Adam([z_s], lr=learning_rate)
+
+        # Track history for plotting
+        record = self._response_call_count in {1, 10, 20, 30, 40, 50}
+        history = []
+
+        # Index mapping: find if x1 (index 0) is in strat_features
+        x1_in_strat = 0 in strat_features
+        if x1_in_strat:
+            x1_idx_in_z = strat_features.index(0)
+
+        for step in range(num_steps):
+            optimizer.zero_grad()
+            logits = torch.dot(theta_s, z_s) + const_term
+            fz = torch.sigmoid(logits)
+            cost = torch.sum(cost_s * (z_s - x_s) ** 2) / (2 * epsilon)
+            loss = -fz + cost
+            loss.backward()
+            optimizer.step()
+
+            # === 非凸约束修复：x1 不允许在 (-0.1, 0.1) 内 ===
+            with torch.no_grad():
+                # 通用范围限制
+                z_s.clamp_(-5.0, 5.0)
+
+                if x1_in_strat:
+                    val = z_s[x1_idx_in_z]
+                    if -0.1 < val < 0.1:
+                        # 推到最近边界
+                        if val < 0:
+                            z_s[x1_idx_in_z] = -0.1
+                        else:
+                            z_s[x1_idx_in_z] = 0.1
+
+            if record:
+                history.append(z_s.detach().cpu().numpy().copy())
+
+        # 可视化轨迹
+        if record and history:
+            import matplotlib.pyplot as plt
+            arr = np.stack(history, axis=0)
+            plt.figure(figsize=(10, 5))
+            for i, f in enumerate(strat_features):
+                label = f'z[{f}]'
+                if f == 0:
+                    label += " (gap [-0.1,0.1] forbidden)"
+                plt.plot(arr[:, i], label=label)
+            plt.axhline(y=0.1, color='r', linestyle='--', alpha=0.5)
+            plt.axhline(y=-0.1, color='r', linestyle='--', alpha=0.5)
+            plt.title(f"z Convergence with Forbidden Zone (call #{self._response_call_count})")
+            plt.xlabel('Step')
+            plt.ylabel('z value')
+            plt.legend()
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(f"./result/last_experiment/z_conv_gap_call_{self._response_call_count}.png")
+            plt.close()
+
+        modified = real_feature.copy()
+        final_z = z_s.detach().cpu().numpy()
+        modified[strat_features] = final_z
+
+        # Final clipping
         modified = np.clip(modified, -5.0, 5.0)
         return modified
 

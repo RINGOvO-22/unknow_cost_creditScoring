@@ -3,8 +3,9 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from matplotlib import pyplot as plt
-from env.creditScoring_v5_box import creditScoring_v5
+from env.creditScoring_v6 import creditScoring_v6
 from model.principal_v5 import Principal_v5
+from model.principal_v6 import Principal_v6
 import csv
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve, auc
@@ -18,26 +19,50 @@ import torch
 # hyperparameters
 max_training_time_steps = 100000
 max_testing_time_steps = 100000
-n_episodes = 100 # 30 or 100
+n_episodes = 800 # 300 or 1000 or 2000
 train_rolling_length = max_training_time_steps//200*n_episodes # for plotting moving averages
 test_rolling_length = max_testing_time_steps//200*n_episodes
 learning_rate = 1e-2
 seed = 0 # 0 or 2
+batch_size = 128
+
 
 # mode = "normalized data + non-strategic response"
 
-def main():
-    env = gym.make("creditScoring_v5")
-    agent = Principal_v5(
-        env=env,
-        learning_rate_actor=learning_rate,
-        learning_rate_critic=learning_rate,
-        learning_rate_cost=learning_rate,
-    )
+def main(costAware_flag=True):
+    env = gym.make("creditScoring_v6")
+
+    if costAware_flag:
+        agent = Principal_v6(
+            env=env,
+            feature_dim=10,
+            learning_rate_actor=learning_rate,
+            learning_rate_critic=learning_rate,
+            learning_rate_cost=learning_rate,
+            buffer_size=batch_size,
+        )
+    else:
+        agent = Principal_v5(
+            env=env,
+            feature_dim=10,
+            learning_rate_actor=learning_rate,
+            learning_rate_critic=learning_rate,
+            buffer_size=batch_size,
+        )
     env.policy_weight = agent.previous_policy_weight
 
     for episode in tqdm(range(n_episodes)):
         # train
+
+        # 设置 epsilon: time-dynamic
+        if episode < n_episodes // 2:
+            env.epsilon = 10
+        elif episode < n_episodes // 4 * 3:
+            env.epsilon = 10
+        else:
+            env.epsilon = 10
+        print(f"\nEpisode {episode}: epsilon = {env.epsilon}")
+        
         obs, info = env.reset()
         env.policy_weight = agent.previous_policy_weight
         done = False
@@ -64,17 +89,18 @@ def main():
         path,
         learned_policy_weight[np.newaxis, :],  # 把 shape=(11,)→(1,11)
         delimiter=",",
-        header="w1,w2,w3",
+        header="w1,w2,w3,w4,w5,w6,w7,w8,w9,w10,bias",
         comments=""
     )
 
-    # test
-    env_test = gym.make("creditScoring_v5")
+    # test: mean nothing in this version
+    env_test = gym.make("creditScoring_v6")
     env_test.mode = 'test'
     obs, info = env_test.reset()
     env_test.policy_weight = agent.previous_policy_weight
     done = False
-    for step in tqdm(range(max_testing_time_steps), desc=f"Test: Step in episode {episode}"):
+    # for step in tqdm(range(max_testing_time_steps), desc=f"Test: Step in episode {episode}"):
+    for step in tqdm(range(2)):
             if done:
                 break
             prob, action = agent.get_action(obs, stochastic=False)
@@ -98,7 +124,7 @@ def plot_results_accAndRewards_export(agent, env, train_rolling_length=train_rol
     fig, axs = plt.subplots(ncols=2, figsize=(12, 5))
 
     # Plot Training Batch Expected Accuracy
-    axs[0].set_title("Training Batch Expected Accuracy per Episode")
+    axs[0].set_title("Training Batch Expected Accuracy")
 
     # Approach 1: Use batch accuracy values recorded in agent.training_batch_acc
     # Use batch accuracy values recorded in agent.training_batch_acc
@@ -108,13 +134,20 @@ def plot_results_accAndRewards_export(agent, env, train_rolling_length=train_rol
         train_rolling_length//128,  # 128 is the batch size
         "valid"
     )
+    total_batches_smoothed = len(acc_moving_average)
+
     axs[0].plot(range(len(acc_moving_average)), acc_moving_average, label="Batch Expected Accuracy")
     # Optional: horizontal line for target accuracy
     # axs[0].axhline(0.7, linestyle='--', label='Target ≈0.7')
     axs[0].legend()
-    axs[0].set_xlabel("Episode")
+    axs[0].set_xlabel("Batch #")
     axs[0].set_ylabel("Expected Accuracy")
     axs[0].set_ylim(0.0, 1.0)
+
+    # 添加四等分竖线（基于平滑后的 batch 数）
+    for i in range(1, 5):
+        x = total_batches_smoothed * i // 4
+        axs[0].axvline(x, color='gray', linestyle='--', alpha=0.7)
     
     # # Appoach 2: calculated from reward
     # smooth_r = get_moving_avgs(agent.training_rewards, 200_000, "valid")
@@ -127,15 +160,22 @@ def plot_results_accAndRewards_export(agent, env, train_rolling_length=train_rol
 
     # Plot Training Rewards with Moving Average
     axs[1].set_title(f"Training rewards (Smoothed over {test_rolling_length} steps)")
-    reawrd_moving_average = get_moving_avgs(
+    reward_moving_average = get_moving_avgs(
         agent.training_rewards,
         test_rolling_length,
         "valid"
     )
-    axs[1].plot(range(len(reawrd_moving_average)), reawrd_moving_average, label="Smoothed Rewards")
+    total_steps_smoothed = len(reward_moving_average)
+
+    axs[1].plot(range(len(reward_moving_average)), reward_moving_average, label="Smoothed Rewards")
     axs[1].legend()
     axs[1].set_xlabel("Training Step")
     axs[1].set_ylabel("Reward")
+
+    # 添加四等分竖线（基于平滑后的 step 数）
+    for i in range(1, 5):
+        x = total_steps_smoothed * i // 4
+        axs[1].axvline(x, color='gray', linestyle='--', alpha=0.7)
 
     # # Plot Testing Accuracy with Moving Average
     # axs[2].set_title(f"Testting Accuracy (Smoothed over {test_rolling_length} steps)")
@@ -298,6 +338,101 @@ def plot_test_auc(agent):
     # plt.show()
     plt.close()
 
+def plot_manipulability(principal, ratio=0.01, min_window=3, save_path='./result/last_experiment/manipulability.png'):
+    """
+    绘制 manipulability 曲线，使用动态窗口的移动平均进行平滑
+    窗口大小 = int(len(data) * ratio)，至少为 min_window
+
+    参数:
+        principal: Principal_v6 实例
+        ratio: 窗口占总数据长度的比例（如 0.01 表示 1%）
+        min_window: 最小窗口大小，防止太小
+        save_path: 图像保存路径
+    """
+    manipulability = principal.training_manipulability
+
+    if len(manipulability) == 0:
+        print("Warning: No manipulability data to plot.")
+        return
+
+    # 动态计算 window
+    window = max(min_window, int(len(manipulability) * ratio))
+    print(f"Manipulability plot: smoothing with moving average window = {window} (from {len(manipulability)} points)")
+
+    # 平滑处理
+    if len(manipulability) >= window:
+        smoothed = np.convolve(manipulability, np.ones(window) / window, mode='valid')
+        x_vals = np.arange(len(smoothed))
+    else:
+        smoothed = manipulability
+        x_vals = np.arange(len(manipulability))
+
+    # 绘图
+    plt.figure(figsize=(10, 6))
+    plt.plot(x_vals, smoothed, color='red', linewidth=1.8, label=f'Moving Average (window={window})')
+    plt.title('Manipulability Score During Training (Smoothed with Dynamic Window)')
+    plt.xlabel('Batch Update Step')
+    plt.ylabel('Manipulability')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+    print(f"Manipulability plot saved to {save_path}")
+
+def plot_manipulability_comparison(agent1, agent2, ratio=0.01, min_window=3, save_path='./result/last_experiment/manipulability_comparison.png'):
+    """
+    对比两个 agent 的 manipulability 曲线，使用动态窗口平滑
+    参数:
+        agent1: cost-aware SRL agent (如 Principal_v6)
+        agent2: standard SRL agent (如 Principal_v5 或 v6 with lambda=0)
+        ratio: 窗口占总数据长度的比例（如 0.01）
+        min_window: 最小窗口大小
+        save_path: 图像保存路径
+    """
+    # 获取数据
+    m1 = agent1.training_manipulability
+    m2 = agent2.training_manipulability
+
+    if len(m1) == 0 or len(m2) == 0:
+        print("Warning: No manipulability data to plot.")
+        return
+
+    # 动态计算 window
+    window1 = max(min_window, int(len(m1) * ratio))
+    window2 = max(min_window, int(len(m2) * ratio))
+    print(f"Agent1 smoothing window = {window1}, Agent2 smoothing window = {window2}")
+
+    # 平滑处理
+    def smooth(data, w):
+        if len(data) >= w:
+            return np.convolve(data, np.ones(w)/w, mode='valid')
+        else:
+            return data
+
+    smoothed_m1 = smooth(m1, window1)
+    smoothed_m2 = smooth(m2, window2)
+
+    # 创建 x 轴（对应 batch step）
+    x1 = np.arange(len(smoothed_m1))
+    x2 = np.arange(len(smoothed_m2))
+
+    # 绘图
+    plt.figure(figsize=(12, 6))
+    
+    plt.plot(x1, smoothed_m1, color='red', linewidth=2, label='Cost-aware SRL (λ>0)')
+    plt.plot(x2, smoothed_m2, color='blue', linewidth=2, label='Standard SRL (λ=0)')
+
+    plt.title('Manipulability Score Comparison: Cost-aware vs Standard SRL')
+    plt.xlabel('Batch Update Step')
+    plt.ylabel('Manipulability')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+    print(f"Manipulability comparison plot saved to {save_path}")
+
 # ---------- 2D Toy Data Visualization tool functions ----------
 import numpy as np
 import matplotlib.pyplot as plt
@@ -410,11 +545,11 @@ def visualize_2d_response(agent,
 
     # 3. 用最终 policy_weight 生成 response 样本
     w = agent.previous_policy_weight
-    env = creditScoring_v5()
+    env = creditScoring_v6()
     env.policy_weight = w
-    # 对每个样本调用 strategic_response_Close / GA
+    # 对每个样本调用 strategic_response_Close
     X_strat = np.vstack([
-        env.strategic_response_GA(x, env.policy_weight)
+        env.strategic_response_Close(x, env.policy_weight)
         for x in X
     ])
 
@@ -439,23 +574,25 @@ def visualize_2d_response(agent,
     
 if __name__ == "__main__":
     # print("Current setting:", mode)
-    agent, env = main()
+    agent1, env = main(costAware_flag=True)
+    agent2, env = main(costAware_flag=False)
     # training_weights_export(agent)
-    training_accuracy_export(agent)
-    testing_accuracy_export(agent)
+    training_accuracy_export(agent1)
+    testing_accuracy_export(agent1)
     # training_weights_single_update(agent)
 
     # Plot the results
     # training_batch_acc(agent)
-    plot_policy_weights_export(agent)
-    plot_test_auc(agent)
-    plot_results_accAndRewards_export(agent, env, train_rolling_length, test_rolling_length)
+    plot_policy_weights_export(agent1)
+    plot_test_auc(agent1)
+    plot_results_accAndRewards_export(agent1, env, train_rolling_length, test_rolling_length)
+    plot_manipulability(agent1)
 
-    visualize_2d_response(
-        agent,
-        data_path = "./data/generated_2D_data.csv",
-        seed      = 0,
-        result_dir= "./result/last_experiment",
-        use_train = True
-    )
+    # Plot comparison
+    plot_manipulability_comparison(agent1, agent2, ratio=0.01, save_path='./result/last_experiment/manipulability_comparison.png')
+    # 计算最终平均 manipulability
+    final_m1 = np.mean(agent1.training_manipulability[-100:])  # 最后 100 批
+    final_m2 = np.mean(agent2.training_manipulability[-100:])
+    print(f"Final Avg Manipulability: Cost-aware = {final_m1:.4f}, Standard = {final_m2:.4f}")
+
 

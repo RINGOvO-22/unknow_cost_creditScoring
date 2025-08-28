@@ -5,11 +5,11 @@ import gymnasium as gym
 import pandas as pd
 import torch
 from tqdm import tqdm
-from utils.data_prep_for2D import load_data
+from utils.data_prep import load_data
 from scipy.special import expit
 
 """
-Version 5: with 2D dataset
+Version :6 with credit scoring dataset: 
 Similarly, use the data processed by methods from "Performative Prediction"
 """
 
@@ -21,13 +21,14 @@ epsilon: float = 0.5 # larger: easier to manipulate, smaller: harder to manipula
 strat_features = np.array([1, 6, 8]) - 1
 strategic_response = True
 response_method = "Close"  # "GA" or "Close"
-dimension = 2 # number of features
+dimension = 10 # number of features
 
-class creditScoring_v5(gym.Env):
+class creditScoring_v6(gym.Env):
 
     def __init__(self,
                  policy_weight=[0.1]*(dimension + 1),  # +1 for bias
-                 maximum_episode_length: int = 1000000):
+                 maximum_episode_length: int = 1000000,
+                 epsilon: float = epsilon,):
         
         self.mode = 'train'
         self.maximum_episode_length = maximum_episode_length
@@ -44,16 +45,18 @@ class creditScoring_v5(gym.Env):
         # action space: discrete action space with 2 actions (0 or 1)
         self.action_space = gym.spaces.Discrete(2)
 
+        self.epsilon = epsilon
+
         # Define the pointer to the sample for online learning
         self.samplePointer = 0
 
         # Load the training and test data
-        filePath = "./data/generated_2D_data.csv"
+        filePath = "./data/GiveMeSomeCredit/cs-training.csv"
         self.train_x, self.train_y, self.test_x, self.test_y = load_data(filePath, seed=seed)
 
         # parameter of the real cost function
         # Assume using a weighted quadratic cost function (same as in the "made practical" paper)
-        self.cost_weight = np.full(shape=dimension, fill_value=0.5, dtype=np.float64)
+        self.cost_weight = np.full(shape=10, fill_value=0.5, dtype=np.float64)
         
         # 把 policy_weight 从 list 转成 ndarray
         self.policy_weight = np.asarray(policy_weight, dtype=np.float64)
@@ -366,9 +369,9 @@ class creditScoring_v5(gym.Env):
         elif action == 0 and label == 1:
             reward = -1
         elif action == 1 and label == 0:
-            reward = -0.5
+            reward = -1
         else:  # action == 1 and label == 1
-            reward = +0.5
+            reward = +1
 
         # 2) Update policy weight if provided (optional for strategic responses)
         if previous_policy_weight is not None:
@@ -396,10 +399,10 @@ class creditScoring_v5(gym.Env):
 
 # Register the environment after the class definition
 gym.register(
-    id="creditScoring_v5",
-    entry_point="env.creditScoring_v5:creditScoring_v5"
+    id="creditScoring_v6",
+    entry_point="env.creditScoring_v6:creditScoring_v6"
 )
 
 if __name__ == "__main__":
-    env = creditScoring_v5()
+    env = creditScoring_v6()
 
